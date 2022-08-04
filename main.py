@@ -2,6 +2,7 @@ from tkinter import *
 from tkinter.filedialog import askopenfilename, asksaveasfilename
 
 import subprocess
+from subprocess import Popen, PIPE
 
 compiler = Tk()
 compiler.title('Ezap editor')
@@ -30,9 +31,17 @@ def open_file():
         set_file_path(path)
 
 def run():
-    code = editor.get('1.0', END)
-    exec(code)
-
+    if file_path == '':
+        save_prompt = Toplevel()
+        text = Label(save_prompt, text='Please save your code first')
+        text.pack()
+        return
+    command = f'python {file_path}'
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    output, error = process.communicate()
+    code_output.insert(END, output)
+    code_output.insert(END, error)
+    
 menu_bar = Menu(compiler)
 
 run_bar = Menu(menu_bar, tearoff=0)
@@ -51,7 +60,7 @@ compiler.config(menu=menu_bar)
 editor = Text(width=292,height=40)
 editor.pack()
 
-code_output = Text(width=292,height=10)
+code_output = Text(height=10)
 code_output.pack()
 
 compiler.mainloop()
