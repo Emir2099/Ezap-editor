@@ -2,15 +2,103 @@ import sys
 import subprocess
 import logging
 from PyQt5.QtWidgets import (
-    QMainWindow, QPlainTextEdit, QFileDialog, QMessageBox, QDockWidget, QSplitter, QToolBar, QAction, QWidget, QInputDialog, QProgressBar, QTableWidget, QPushButton, QTableWidgetItem, QVBoxLayout
+    QMainWindow, QPlainTextEdit, QFileDialog, QMessageBox, QDockWidget, QSplitter, QToolBar, QAction, QWidget, QInputDialog, QProgressBar, QTableWidget, QPushButton, QTableWidgetItem, QVBoxLayout, QFileSystemModel, QTreeView, QDialog, QLineEdit, QListWidget, QListWidgetItem, QSlider, QLabel, QHBoxLayout, QComboBox, QShortcut
 )
-from PyQt5.QtGui import QFont, QIcon, QTextCursor
-from PyQt5.QtCore import Qt, QProcess
+from PyQt5.QtGui import QFont, QIcon, QTextCursor, QKeySequence
+from PyQt5.QtCore import Qt, QProcess, QSize
 import qtawesome as qta
+import os
 
 from editor.code_editor import CodeEditor
 from editor.output import QtHandler, StreamToLogger
 from utils.helpers import validate_input, confirm_action, show_error_message, extract_error_line
+
+class CommandPalette(QDialog):
+    def __init__(self, parent, actions):
+        super().__init__(parent)
+        self.setWindowTitle("Command Palette")
+        self.setModal(True)
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+        self.setStyleSheet("QDialog { background: #f8fafc; border-radius: 12px; } QLineEdit { font-size: 18px; padding: 8px; border-radius: 8px; } QListWidget { font-size: 16px; border-radius: 8px; }")
+        self.setFixedWidth(400)
+        self.setFixedHeight(320)
+        layout = QVBoxLayout(self)
+        self.search = QLineEdit(self)
+        self.search.setPlaceholderText("Type a command...")
+        self.list = QListWidget(self)
+        layout.addWidget(self.search)
+        layout.addWidget(self.list)
+        self.actions = actions
+        self.filtered = list(actions.keys())
+        self.update_list()
+        self.search.textChanged.connect(self.filter_list)
+        self.search.returnPressed.connect(self.trigger_selected)
+        self.list.itemActivated.connect(self.trigger_selected)
+        self.search.setFocus()
+
+    def filter_list(self, text):
+        self.filtered = [k for k in self.actions if text.lower() in k.lower()]
+        self.update_list()
+
+    def update_list(self):
+        self.list.clear()
+        for k in self.filtered:
+            item = QListWidgetItem(k)
+            self.list.addItem(item)
+        if self.list.count() > 0:
+            self.list.setCurrentRow(0)
+
+    def trigger_selected(self):
+        if self.list.currentRow() >= 0:
+            action = self.filtered[self.list.currentRow()]
+            self.actions[action]()
+            self.accept()
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent, current_font_size, current_theme):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setModal(True)
+        self.setFixedWidth(350)
+        self.setFixedHeight(200)
+        self.setStyleSheet("QDialog { background: #f8fafc; border-radius: 12px; } QLabel { font-size: 16px; } QSlider { min-width: 150px; } QComboBox { font-size: 15px; border-radius: 8px; padding: 4px; }")
+        layout = QVBoxLayout(self)
+        # Theme
+        theme_layout = QHBoxLayout()
+        theme_label = QLabel("Theme:")
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Light", "Dark"])
+        self.theme_combo.setCurrentText(current_theme)
+        theme_layout.addWidget(theme_label)
+        theme_layout.addWidget(self.theme_combo)
+        # Font size
+        font_layout = QHBoxLayout()
+        font_label = QLabel("Font Size:")
+        self.font_slider = QSlider(Qt.Horizontal)
+        self.font_slider.setMinimum(10)
+        self.font_slider.setMaximum(28)
+        self.font_slider.setValue(current_font_size)
+        self.font_value = QLabel(str(current_font_size))
+        self.font_slider.valueChanged.connect(lambda v: self.font_value.setText(str(v)))
+        font_layout.addWidget(font_label)
+        font_layout.addWidget(self.font_slider)
+        font_layout.addWidget(self.font_value)
+        # Buttons
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        # Add to main layout
+        layout.addLayout(theme_layout)
+        layout.addLayout(font_layout)
+        layout.addStretch()
+        layout.addLayout(btn_layout)
+
+    def get_settings(self):
+        return self.theme_combo.currentText(), self.font_slider.value()
 
 class EZCode(QMainWindow):
     def __init__(self):
@@ -33,14 +121,35 @@ class EZCode(QMainWindow):
         self.create_package_actions()
         # Initialize other variables and widgets
         # self.setup_package_management()
+        self.setup_command_palette()
 
     def init_ui(self):
         self.setWindowTitle('EZap Editor')
-        self.setGeometry(100, 100, 1000, 800)
+        self.setGeometry(100, 100, 1100, 850)
 
         self.editor = CodeEditor()
         self.output = QPlainTextEdit(self)
         self.output.setReadOnly(True)
+
+        # File Explorer Panel
+        self.file_model = QFileSystemModel()
+        self.file_model.setRootPath(os.getcwd())
+        self.file_model.setNameFilters(["*.py"])
+        self.file_model.setNameFilterDisables(False)
+        self.file_tree = QTreeView()
+        self.file_tree.setModel(self.file_model)
+        self.file_tree.setRootIndex(self.file_model.index(os.getcwd()))
+        self.file_tree.setColumnHidden(1, True)
+        self.file_tree.setColumnHidden(2, True)
+        self.file_tree.setColumnHidden(3, True)
+        self.file_tree.setHeaderHidden(True)
+        self.file_tree.setStyleSheet("QTreeView { background: #f4f7fa; border-radius: 10px; font-size: 15px; } QTreeView::item:selected { background: #e0e7ef; color: #00c896; }")
+        self.file_tree.clicked.connect(self.open_file_from_explorer)
+        self.file_tree.setMinimumWidth(220)
+
+        self.dock_file_explorer = QDockWidget("File Explorer", self)
+        self.dock_file_explorer.setWidget(self.file_tree)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_file_explorer)
 
         self.dock_output = QDockWidget("Output Console", self)
         self.dock_output.setWidget(self.output)
@@ -48,35 +157,43 @@ class EZCode(QMainWindow):
 
         self.splitter = QSplitter(Qt.Vertical)
         self.splitter.addWidget(self.editor)
-
         self.editor.setMinimumHeight(400)
         self.output.setMinimumHeight(200)
-
         self.splitter.addWidget(self.dock_output)
         self.splitter.setSizes([600, 200])
-
         self.setCentralWidget(self.splitter)
 
         self.create_toolbar()
         self.create_menu()
         self.create_status_bar()
-        self.apply_stylesheet()
+        self.apply_modern_stylesheet()
         self.set_light_mode()
+        self.show_welcome_if_no_file()
         self.show()
 
     def create_toolbar(self, mode='light'):
         self.toolbar = QToolBar("Main Toolbar")
+        self.toolbar.setIconSize(QSize(32, 32))
+        self.toolbar.setStyleSheet("QToolBar { spacing: 12px; border-radius: 12px; padding: 8px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #f8fafc, stop:1 #e0e7ef); }")
         self.addToolBar(self.toolbar)
-        color = 'black' if mode == "light" else 'white'
-        color_active = 'green' if mode == 'light' else '#80c0ff'  # Set the color based on the mode
+        color = '#222' if mode == "light" else '#f8f8f2'
+        color_active = '#00c896' if mode == 'light' else '#80c0ff'
 
-        open_action = QAction(qta.icon('fa.folder-open', color = color, color_active=color_active), "Open", self)
+        open_action = QAction(qta.icon('fa.folder-open', color=color, color_active=color_active), "Open", self)
+        open_action.setShortcut('Ctrl+O')
+        open_action.setToolTip("Open File (Ctrl+O)")
         open_action.triggered.connect(self.open_file)
-        save_action = QAction(qta.icon('fa.save', color = color, color_active=color_active), "Save", self)
+        save_action = QAction(qta.icon('fa.save', color=color, color_active=color_active), "Save", self)
+        save_action.setShortcut('Ctrl+S')
+        save_action.setToolTip("Save File (Ctrl+S)")
         save_action.triggered.connect(self.save_file)
-        run_action = QAction(qta.icon('fa.play', color = color, color_active=color_active), "Run", self)
+        run_action = QAction(qta.icon('fa.play-circle', color='#00c896', color_active='#00e6b8'), "Run", self)
+        run_action.setShortcut('F5')
+        run_action.setToolTip("Run Code (F5)")
         run_action.triggered.connect(self.run_code)
-        debug_action = QAction(qta.icon('fa.bug', color = color, color_active=color_active), "Debug", self)
+        debug_action = QAction(qta.icon('fa.bug', color='#e67e22', color_active='#f39c12'), "Debug", self)
+        debug_action.setShortcut('F9')
+        debug_action.setToolTip("Toggle Debug Mode (F9)")
         debug_action.triggered.connect(self.toggle_debugging_mode)
 
         self.toolbar.addAction(open_action)
@@ -89,12 +206,19 @@ class EZCode(QMainWindow):
 
         file_menu = menubar.addMenu('File')
         open_action = QAction('Open', self)
+        open_action.setShortcut('Ctrl+O')
+        open_action.setToolTip('Open File (Ctrl+O)')
         open_action.triggered.connect(self.open_file)
         save_action = QAction('Save', self)
+        save_action.setShortcut('Ctrl+S')
+        save_action.setToolTip('Save File (Ctrl+S)')
         save_action.triggered.connect(self.save_file)
         save_as_action = QAction('Save As', self)
+        save_as_action.setToolTip('Save As')
         save_as_action.triggered.connect(self.save_as)
         exit_action = QAction('Exit', self)
+        exit_action.setShortcut('Ctrl+Q')
+        exit_action.setToolTip('Exit (Ctrl+Q)')
         exit_action.triggered.connect(self.close)
 
         file_menu.addAction(open_action)
@@ -104,11 +228,15 @@ class EZCode(QMainWindow):
 
         run_menu = menubar.addMenu('Run')
         run_action = QAction('Run', self)
+        run_action.setShortcut('F5')
+        run_action.setToolTip('Run Code (F5)')
         run_action.triggered.connect(self.run_code)
         run_menu.addAction(run_action)
 
         debug_menu = menubar.addMenu('Debug')
         debug_action = QAction('Debug', self)
+        debug_action.setShortcut('F9')
+        debug_action.setToolTip('Toggle Debug Mode (F9)')
         debug_action.triggered.connect(self.toggle_debugging_mode)
 
         debug_menu.addAction(debug_action)
@@ -131,6 +259,9 @@ class EZCode(QMainWindow):
         dark_mode_action.triggered.connect(self.set_dark_mode)
         settings_menu.addAction(light_mode_action)
         settings_menu.addAction(dark_mode_action)
+        settings_action = QAction('Settings...', self)
+        settings_action.triggered.connect(self.show_settings_dialog)
+        settings_menu.addAction(settings_action)
         # console_log_action = QAction('Console Log', self, checkable=True)
         # console_log_action.setChecked(self.log_capture)
         # console_log_action.triggered.connect(self.toggle_console_log)
@@ -139,6 +270,19 @@ class EZCode(QMainWindow):
     def create_status_bar(self):
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")
+        # Font size slider
+        self.font_slider = QSlider(Qt.Horizontal)
+        self.font_slider.setMinimum(10)
+        self.font_slider.setMaximum(28)
+        self.font_slider.setValue(self.editor.font().pointSize())
+        self.font_slider.setFixedWidth(100)
+        self.font_slider.setToolTip("Font Size")
+        self.font_slider.valueChanged.connect(self.set_editor_font_size)
+        self.status_bar.addPermanentWidget(QLabel("Font Size:"))
+        self.status_bar.addPermanentWidget(self.font_slider)
+
+    def set_editor_font_size(self, value):
+        self.editor.setFont(QFont("Courier", value))
 
     def open_file(self):
         options = QFileDialog.Options()
@@ -148,6 +292,8 @@ class EZCode(QMainWindow):
                 self.editor.setPlainText(file.read())
                 self.file_path = file_path
             self.status_bar.showMessage(f"Opened: {file_path}")
+        else:
+            self.show_welcome_if_no_file()
 
     def save_file(self):
         if not self.file_path:
@@ -177,14 +323,16 @@ class EZCode(QMainWindow):
         stdout, stderr = process.communicate()
 
         self.output.clear()
-        self.output.appendPlainText(stdout)
+        self.append_output_html(stdout, 'normal')
         if stderr:
             error_line = extract_error_line(stderr)
             if error_line:
                 self.editor.highlighter.set_error_line(error_line)
-            self.write_text_to_output(stderr)
+                self.editor.error_tooltip = stderr
+            self.append_output_html(stderr, 'error')
         else:
             self.editor.highlighter.clear_error_line()
+            self.editor.error_tooltip = ''
 
         self.status_bar.showMessage("Execution finished")
 
@@ -230,50 +378,100 @@ class EZCode(QMainWindow):
         else:
             event.ignore()
 
-    def apply_stylesheet(self):
+    def apply_modern_stylesheet(self):
         self.setStyleSheet("""
         QMainWindow {
-            background-color: #353535;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f8fafc, stop:1 #e0e7ef);
         }
         QMenuBar {
-            background-color: #2b2b2b;
-            color: #f8f8f2;
+            background: #f8fafc;
+            color: #222;
+            font-size: 15px;
+            border-radius: 8px;
         }
         QMenuBar::item {
-            background-color: #2b2b2b;
-            color: #f8f8f2;
+            background: transparent;
+            color: #222;
+            padding: 6px 18px;
+            border-radius: 8px;
         }
-        QMenuBar::item::selected {
-            background-color: #444444;
+        QMenuBar::item:selected {
+            background: #e0e7ef;
+            color: #00c896;
         }
         QMenu {
-            background-color: #2b2b2b;
-            color: #f8f8f2;
+            background: #f8fafc;
+            color: #222;
+            font-size: 15px;
+            border-radius: 8px;
         }
-        QMenu::item::selected {
-            background-color: #444444;
+        QMenu::item {
+            padding: 6px 18px;
+            border-radius: 8px;
+        }
+        QMenu::item:selected {
+            background: #e0e7ef;
+            color: #00c896;
         }
         QToolBar {
-            background-color: #2b2b2b;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #f8fafc, stop:1 #e0e7ef);
+            border-radius: 12px;
+            spacing: 12px;
+        }
+        QToolButton {
+            background: transparent;
+            border-radius: 8px;
+            padding: 8px;
+        }
+        QToolButton:hover {
+            background: #e0e7ef;
         }
         QStatusBar {
-            background-color: #2b2b2b;
-            color: #f8f8f2;
+            background: #f8fafc;
+            color: #222;
+            font-size: 14px;
+            border-radius: 8px;
         }
-        QMessageBox {
-            background-color: #2b2b2b;
-            color: #f8f8f2;
-        }
-        QPushButton {
-            background-color: #444444;
-            color: #f8f8f2;
-        }
-        QPushButton::hover {
-            background-color: #555555;
+        QDockWidget {
+            background: #f8fafc;
+            border-radius: 12px;
         }
         QPlainTextEdit {
-            background-color: #2b2b2b;
-            color: #f8f8f2;
+            background: #f4f7fa;
+            color: #222;
+            font-family: 'Fira Mono', 'Consolas', 'Courier New', monospace;
+            font-size: 16px;
+            border-radius: 10px;
+            padding: 8px;
+        }
+        QSplitter::handle {
+            background: #e0e7ef;
+        }
+        QPushButton {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00c896, stop:1 #00e6b8);
+            color: #fff;
+            border-radius: 8px;
+            padding: 8px 18px;
+            font-size: 15px;
+        }
+        QPushButton:hover {
+            background: #00e6b8;
+        }
+        QTableWidget {
+            background: #f4f7fa;
+            border-radius: 8px;
+            font-size: 15px;
+        }
+        QHeaderView::section {
+            background: #e0e7ef;
+            color: #222;
+            border-radius: 8px;
+            font-size: 15px;
+        }
+        QMessageBox {
+            background: #f8fafc;
+            color: #222;
+            border-radius: 12px;
         }
         """)
 
@@ -426,4 +624,65 @@ class EZCode(QMainWindow):
 
         cursor.insertText(text + '\n')
         self.output.setTextCursor(cursor)
-        self.output.ensureCursorVisible() 
+        self.output.ensureCursorVisible()
+
+    def open_file_from_explorer(self, index):
+        file_path = self.file_model.filePath(index)
+        if os.path.isfile(file_path):
+            with open(file_path, 'r') as file:
+                self.editor.setPlainText(file.read())
+                self.file_path = file_path
+            self.status_bar.showMessage(f"Opened: {file_path}") 
+
+    def setup_command_palette(self):
+        self.palette_actions = {
+            "Open File": self.open_file,
+            "Save File": self.save_file,
+            "Save As": self.save_as,
+            "Run Code": self.run_code,
+            "Toggle Debug Mode": self.toggle_debugging_mode,
+            "Light Mode": self.set_light_mode,
+            "Dark Mode": self.set_dark_mode,
+            "Show Installed Packages": self.show_installed_packages,
+            "Install Package": self.install_package,
+            "Uninstall Package": self.uninstall_package,
+            "Clear Output Console": self.clear_output_console,
+            "Reset Layout": self.reset_layout,
+            "Toggle Output Console": self.toggle_output_console,
+            "Exit": self.close,
+            "Settings...": self.show_settings_dialog,
+        }
+        self.palette_shortcut = QShortcut(QKeySequence("Ctrl+Shift+P"), self)
+        self.palette_shortcut.activated.connect(self.show_command_palette)
+
+    def show_command_palette(self):
+        dlg = CommandPalette(self, self.palette_actions)
+        dlg.move(self.geometry().center() - dlg.rect().center())
+        dlg.exec_() 
+
+    def show_settings_dialog(self):
+        current_theme = "Light" if self.editor.palette().color(self.editor.backgroundRole()).lightness() > 128 else "Dark"
+        dlg = SettingsDialog(self, self.editor.font().pointSize(), current_theme)
+        if dlg.exec_() == QDialog.Accepted:
+            theme, font_size = dlg.get_settings()
+            if theme == "Light":
+                self.set_light_mode()
+            else:
+                self.set_dark_mode()
+            self.editor.setFont(QFont("Courier", font_size)) 
+
+    def show_welcome_if_no_file(self):
+        if not self.file_path:
+            welcome = (
+                "Welcome to EZap Editor!\n"
+                "\n"
+                "- Open or create a Python file to get started.\n"
+                "- Ctrl+O: Open File\n"
+                "- Ctrl+S: Save File\n"
+                "- F5: Run Code\n"
+                "- Ctrl+Shift+P: Command Palette\n"
+                "- Use the left panel to browse your files.\n"
+                "- Switch themes and font size in Settings.\n"
+                "\nHappy coding! 🚀"
+            )
+            self.editor.setPlainText(welcome) 

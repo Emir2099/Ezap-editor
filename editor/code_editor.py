@@ -1,5 +1,5 @@
 import re
-from PyQt5.QtWidgets import QPlainTextEdit, QWidget
+from PyQt5.QtWidgets import QPlainTextEdit, QWidget, QToolTip
 from PyQt5.QtGui import QFont, QColor, QSyntaxHighlighter, QTextCharFormat, QPainter, QTextCursor
 from PyQt5.QtCore import Qt
 
@@ -53,6 +53,7 @@ class CodeEditor(QPlainTextEdit):
         self.breakpoints = set()
         self.debugging_mode = False
         self.current_line = -1
+        self.error_tooltip = ''
 
         self.blockCountChanged.connect(self.update_line_number_area_width)
         self.updateRequest.connect(self.update_line_number_area)
@@ -121,4 +122,12 @@ class CodeEditor(QPlainTextEdit):
 
     def set_current_line(self, line):
         self.current_line = line
-        self.viewport().update() 
+        self.viewport().update()
+
+    def mouseMoveEvent(self, event):
+        cursor = self.cursorForPosition(event.pos())
+        if self.highlighter.error_line >= 0 and cursor.blockNumber() == self.highlighter.error_line and self.error_tooltip:
+            QToolTip.showText(self.mapToGlobal(event.pos()), self.error_tooltip, self)
+        else:
+            QToolTip.hideText()
+        super().mouseMoveEvent(event) 
