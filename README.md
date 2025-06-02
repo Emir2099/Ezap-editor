@@ -18,7 +18,7 @@ A modern, beginner-friendly Python code editor built with PyQt5, featuring a vib
 ## 🚀 Installation
 1. **Clone the repository:**
    ```bash
-   git clone <your-repo-url>
+   git clone https://github.com/Emir2099/Ezap-editor
    cd Ezap\ editor
    ```
 2. **Install dependencies:**
