@@ -189,6 +189,8 @@ class EZCode(QMainWindow):
         self.debugging = False
         self.pdb = None
         self.notification_label = None
+        self.run_process = None
+        self.stop_action = None
         self.init_ui()
 
         # Add a logging handler
@@ -401,26 +403,63 @@ class EZCode(QMainWindow):
             self.show_notification("File saved!")
 
     def run_code(self):
+        if self.run_process is not None:
+            self.show_notification("A script is already running!")
+            return
         if self.debugging:
             self.stop_debugging()
-
         code = self.editor.toPlainText()
-        process = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
-
         self.output.clear()
-        self.append_output_html(stdout, 'normal')
-        if stderr:
-            error_line = extract_error_line(stderr)
-            if error_line:
-                self.editor.highlighter.set_error_line(error_line)
-                self.editor.error_tooltip = stderr
-            self.append_output_html(stderr, 'error')
-        else:
-            self.editor.highlighter.clear_error_line()
-            self.editor.error_tooltip = ''
+        # Write code to a temp file
+        import tempfile
+        self.temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.py', mode='w', encoding='utf-8')
+        self.temp_file.write(code)
+        self.temp_file.close()
+        # Start QProcess
+        self.run_process = QProcess(self)
+        self.run_process.setProcessChannelMode(QProcess.MergedChannels)
+        self.run_process.readyReadStandardOutput.connect(self.handle_run_stdout)
+        self.run_process.readyReadStandardError.connect(self.handle_run_stderr)
+        self.run_process.finished.connect(self.handle_run_finished)
+        self.run_process.start(sys.executable, [self.temp_file.name])
+        # Add Stop button
+        if not self.stop_action:
+            self.stop_action = QAction(qta.icon('fa.stop', color='#e74c3c'), "Stop", self)
+            self.stop_action.setToolTip("Stop Running Script")
+            self.stop_action.triggered.connect(self.stop_run_code)
+            self.toolbar.addAction(self.stop_action)
+        self.status_bar.showMessage("Running script...")
 
+    def handle_run_stdout(self):
+        output = self.run_process.readAllStandardOutput().data().decode(errors='replace')
+        self.output.moveCursor(QTextCursor.End)
+        self.output.insertPlainText(output)
+        self.output.moveCursor(QTextCursor.End)
+
+    def handle_run_stderr(self):
+        error = self.run_process.readAllStandardError().data().decode(errors='replace')
+        self.output.moveCursor(QTextCursor.End)
+        self.output.insertPlainText(error)
+        self.output.moveCursor(QTextCursor.End)
+
+    def handle_run_finished(self):
         self.status_bar.showMessage("Execution finished")
+        if self.stop_action:
+            self.toolbar.removeAction(self.stop_action)
+            self.stop_action = None
+        self.run_process = None
+        import os
+        if hasattr(self, 'temp_file'):
+            try:
+                os.unlink(self.temp_file.name)
+            except Exception:
+                pass
+
+    def stop_run_code(self):
+        if self.run_process:
+            self.run_process.kill()
+            self.status_bar.showMessage("Script stopped.")
+            self.show_notification("Script stopped!")
 
     def toggle_debugging_mode(self):
         self.editor.toggle_debugging_mode()
