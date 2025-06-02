@@ -2,12 +2,14 @@ import sys
 import subprocess
 import logging
 from PyQt5.QtWidgets import (
-    QMainWindow, QPlainTextEdit, QFileDialog, QMessageBox, QDockWidget, QSplitter, QToolBar, QAction, QWidget, QInputDialog, QProgressBar, QTableWidget, QPushButton, QTableWidgetItem, QVBoxLayout, QFileSystemModel, QTreeView, QDialog, QLineEdit, QListWidget, QListWidgetItem, QSlider, QLabel, QHBoxLayout, QComboBox, QShortcut
+    QMainWindow, QPlainTextEdit, QFileDialog, QMessageBox, QDockWidget, QSplitter, QToolBar, QAction, QWidget, QInputDialog, QProgressBar, QTableWidget, QPushButton, QTableWidgetItem, QVBoxLayout, QFileSystemModel, QTreeView, QDialog, QLineEdit, QListWidget, QListWidgetItem, QSlider, QLabel, QHBoxLayout, QComboBox, QShortcut, QProgressDialog, QGraphicsOpacityEffect, QListView, QAbstractItemView
 )
 from PyQt5.QtGui import QFont, QIcon, QTextCursor, QKeySequence
-from PyQt5.QtCore import Qt, QProcess, QSize
+from PyQt5.QtCore import Qt, QProcess, QSize, QThread, pyqtSignal, QPropertyAnimation, QTimer
 import qtawesome as qta
 import os
+import time
+import glob
 
 from editor.code_editor import CodeEditor
 from editor.output import QtHandler, StreamToLogger
@@ -19,10 +21,21 @@ class CommandPalette(QDialog):
         self.setWindowTitle("Command Palette")
         self.setModal(True)
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
-        self.setStyleSheet("QDialog { background: #f8fafc; border-radius: 12px; } QLineEdit { font-size: 18px; padding: 8px; border-radius: 8px; } QListWidget { font-size: 16px; border-radius: 8px; }")
+        self.setStyleSheet("QDialog { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #181c2a, stop:1 #00c896); border: 2px solid #00c896; border-radius: 18px; } QLineEdit { font-size: 18px; padding: 8px; border-radius: 8px; background: #23263a; color: #fff; border: 1px solid #00c896; } QListWidget { font-size: 16px; border-radius: 8px; background: #23263a; color: #fff; }")
         self.setFixedWidth(400)
         self.setFixedHeight(320)
         layout = QVBoxLayout(self)
+        # Close button row
+        close_btn_layout = QHBoxLayout()
+        close_btn_layout.addStretch()
+        close_btn = QPushButton("✕", self)
+        close_btn.setFixedSize(28, 28)
+        close_btn.setStyleSheet("QPushButton { background: transparent; color: #fff; font-size: 18px; border: none; } QPushButton:hover { color: #00c896; }")
+        close_btn.clicked.connect(self.reject)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setToolTip("Close (Esc)")
+        close_btn_layout.addWidget(close_btn)
+        layout.addLayout(close_btn_layout)
         self.search = QLineEdit(self)
         self.search.setPlaceholderText("Type a command...")
         self.list = QListWidget(self)
@@ -34,7 +47,15 @@ class CommandPalette(QDialog):
         self.search.textChanged.connect(self.filter_list)
         self.search.returnPressed.connect(self.trigger_selected)
         self.list.itemActivated.connect(self.trigger_selected)
-        self.search.setFocus()
+        self.list.itemClicked.connect(self.trigger_selected)
+        # Sci-fi glow effect
+        self.effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.effect)
+        self.anim = QPropertyAnimation(self.effect, b"opacity")
+        self.anim.setDuration(350)
+        self.anim.setStartValue(0)
+        self.anim.setEndValue(1)
+        self.anim.start()
 
     def filter_list(self, text):
         self.filtered = [k for k in self.actions if text.lower() in k.lower()]
@@ -53,6 +74,25 @@ class CommandPalette(QDialog):
             action = self.filtered[self.list.currentRow()]
             self.actions[action]()
             self.accept()
+
+    def accept(self):
+        # Fade out on close
+        self.anim = QPropertyAnimation(self.effect, b"opacity")
+        self.anim.setDuration(250)
+        self.anim.setStartValue(1)
+        self.anim.setEndValue(0)
+        self.anim.finished.connect(super().accept)
+        self.anim.start()
+
+    def reject(self):
+        print('Command palette closed')  # Debug print
+        super().reject()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(event)
 
 class SettingsDialog(QDialog):
     def __init__(self, parent, current_font_size, current_theme):
@@ -100,6 +140,47 @@ class SettingsDialog(QDialog):
     def get_settings(self):
         return self.theme_combo.currentText(), self.font_slider.value()
 
+class PackageListWorker(QThread):
+    result = pyqtSignal(str)
+    def run(self):
+        import subprocess
+        process = subprocess.Popen('pip list --format=columns', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        self.result.emit(stdout)
+
+class QuickFileSwitcher(QDialog):
+    def __init__(self, parent, root_path):
+        super().__init__(parent)
+        self.setWindowTitle("Quick File Switcher")
+        self.setModal(True)
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+        self.setStyleSheet("QDialog { background: #23263a; border: 2px solid #00c896; border-radius: 16px; } QListWidget { background: #23263a; color: #fff; font-size: 16px; border-radius: 8px; }")
+        self.setFixedWidth(400)
+        self.setFixedHeight(320)
+        layout = QVBoxLayout(self)
+        self.list_widget = QListWidget(self)
+        layout.addWidget(self.list_widget)
+        # Recursively find all .py files
+        py_files = [os.path.relpath(f, root_path) for f in glob.glob(os.path.join(root_path, '**', '*.py'), recursive=True)]
+        self.list_widget.addItems(py_files)
+        self.list_widget.setCurrentRow(0)
+        self.list_widget.itemDoubleClicked.connect(self.accept)
+        self.list_widget.installEventFilter(self)
+        # Touchpad scroll is supported by default
+
+    def eventFilter(self, obj, event):
+        if obj is self.list_widget and event.type() == event.KeyPress:
+            if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+                self.accept()
+                return True
+        return super().eventFilter(obj, event)
+
+    def selected_file(self):
+        item = self.list_widget.currentItem()
+        if item:
+            return os.path.abspath(item.text())
+        return None
+
 class EZCode(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -107,6 +188,7 @@ class EZCode(QMainWindow):
         self.log_capture = False
         self.debugging = False
         self.pdb = None
+        self.notification_label = None
         self.init_ui()
 
         # Add a logging handler
@@ -122,6 +204,8 @@ class EZCode(QMainWindow):
         # Initialize other variables and widgets
         # self.setup_package_management()
         self.setup_command_palette()
+        self.setup_file_explorer_shortcut()
+        self.setup_quick_file_switcher()
 
     def init_ui(self):
         self.setWindowTitle('EZap Editor')
@@ -303,6 +387,7 @@ class EZCode(QMainWindow):
                 code = self.editor.toPlainText()
                 file.write(code)
             self.status_bar.showMessage(f"Saved: {self.file_path}")
+            self.show_notification("File saved!")
 
     def save_as(self):
         options = QFileDialog.Options()
@@ -313,6 +398,7 @@ class EZCode(QMainWindow):
                 file.write(code)
                 self.file_path = file_path
             self.status_bar.showMessage(f"Saved as: {file_path}")
+            self.show_notification("File saved!")
 
     def run_code(self):
         if self.debugging:
@@ -381,27 +467,27 @@ class EZCode(QMainWindow):
     def apply_modern_stylesheet(self):
         self.setStyleSheet("""
         QMainWindow {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f8fafc, stop:1 #e0e7ef);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #181c2a, stop:1 #23263a);
         }
         QMenuBar {
-            background: #f8fafc;
-            color: #222;
+            background: rgba(24,28,42,0.95);
+            color: #00c896;
             font-size: 15px;
             border-radius: 8px;
         }
         QMenuBar::item {
             background: transparent;
-            color: #222;
+            color: #00c896;
             padding: 6px 18px;
             border-radius: 8px;
         }
         QMenuBar::item:selected {
-            background: #e0e7ef;
-            color: #00c896;
+            background: #23263a;
+            color: #fff;
         }
         QMenu {
-            background: #f8fafc;
-            color: #222;
+            background: rgba(24,28,42,0.98);
+            color: #00c896;
             font-size: 15px;
             border-radius: 8px;
         }
@@ -410,68 +496,78 @@ class EZCode(QMainWindow):
             border-radius: 8px;
         }
         QMenu::item:selected {
-            background: #e0e7ef;
-            color: #00c896;
+            background: #23263a;
+            color: #fff;
         }
         QToolBar {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #f8fafc, stop:1 #e0e7ef);
-            border-radius: 12px;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #23263a, stop:1 #00c896);
+            border-radius: 16px;
             spacing: 12px;
+            border: 2px solid #00c896;
         }
         QToolButton {
-            background: transparent;
-            border-radius: 8px;
+            background: rgba(24,28,42,0.8);
+            border-radius: 12px;
             padding: 8px;
+            color: #00c896;
+            border: 1.5px solid #00c896;
         }
         QToolButton:hover {
-            background: #e0e7ef;
+            background: #00c896;
+            color: #fff;
         }
         QStatusBar {
-            background: #f8fafc;
-            color: #222;
+            background: #181c2a;
+            color: #00c896;
             font-size: 14px;
             border-radius: 8px;
         }
         QDockWidget {
-            background: #f8fafc;
-            border-radius: 12px;
+            background: rgba(24,28,42,0.95);
+            border-radius: 16px;
+            border: 2px solid #00c896;
         }
         QPlainTextEdit {
-            background: #f4f7fa;
-            color: #222;
+            background: #23263a;
+            color: #fff;
             font-family: 'Fira Mono', 'Consolas', 'Courier New', monospace;
             font-size: 16px;
-            border-radius: 10px;
+            border-radius: 12px;
             padding: 8px;
+            border: 1.5px solid #00c896;
         }
         QSplitter::handle {
-            background: #e0e7ef;
+            background: #00c896;
         }
         QPushButton {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00c896, stop:1 #00e6b8);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00c896, stop:1 #23263a);
             color: #fff;
-            border-radius: 8px;
+            border-radius: 12px;
             padding: 8px 18px;
             font-size: 15px;
+            border: 2px solid #00c896;
         }
         QPushButton:hover {
-            background: #00e6b8;
+            background: #00c896;
+            color: #23263a;
         }
         QTableWidget {
-            background: #f4f7fa;
-            border-radius: 8px;
+            background: #23263a;
+            border-radius: 12px;
             font-size: 15px;
+            color: #fff;
+            border: 1.5px solid #00c896;
         }
         QHeaderView::section {
-            background: #e0e7ef;
-            color: #222;
+            background: #00c896;
+            color: #23263a;
             border-radius: 8px;
             font-size: 15px;
         }
         QMessageBox {
-            background: #f8fafc;
-            color: #222;
-            border-radius: 12px;
+            background: #23263a;
+            color: #00c896;
+            border-radius: 16px;
         }
         """)
 
@@ -594,12 +690,25 @@ class EZCode(QMainWindow):
 
     def show_installed_packages(self):
         self.setup_package_management()
-        installed_packages = self.execute_command('pip list --format=columns')
         self.package_table.clearContents()
         self.package_table.setRowCount(0)
+        # Show loading spinner overlay
+        self.loading_dialog = QProgressDialog("Loading installed packages...", None, 0, 0, self)
+        self.loading_dialog.setWindowModality(Qt.ApplicationModal)
+        self.loading_dialog.setCancelButton(None)
+        self.loading_dialog.setMinimumDuration(0)
+        self.loading_dialog.setStyleSheet("QProgressDialog { background: #222; color: #fff; border-radius: 12px; font-size: 16px; }")
+        self.loading_dialog.show()
+        # Start worker thread
+        self.pkg_worker = PackageListWorker()
+        self.pkg_worker.result.connect(self.on_packages_loaded)
+        self.pkg_worker.start()
 
-        # Split the output into lines and parse the package information
-        lines = installed_packages.splitlines()[2:]  # Skip the first two header lines
+    def on_packages_loaded(self, installed_packages):
+        self.loading_dialog.close()
+        self.package_table.clearContents()
+        self.package_table.setRowCount(0)
+        lines = installed_packages.splitlines()[2:]
         for line in lines:
             package_info = line.split()
             if len(package_info) >= 2:
@@ -686,3 +795,88 @@ class EZCode(QMainWindow):
                 "\nHappy coding! 🚀"
             )
             self.editor.setPlainText(welcome) 
+
+    def setup_file_explorer_shortcut(self):
+        self.explorer_shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
+        self.explorer_shortcut.activated.connect(self.toggle_file_explorer_animated)
+
+    def toggle_file_explorer_animated(self):
+        dock = self.dock_file_explorer
+        if dock.isVisible():
+            anim = QPropertyAnimation(dock, b"maximumWidth")
+            anim.setDuration(350)
+            anim.setStartValue(dock.width())
+            anim.setEndValue(0)
+            anim.finished.connect(dock.hide)
+            anim.start()
+            self._explorer_anim = anim  # Keep reference
+        else:
+            dock.show()
+            anim = QPropertyAnimation(dock, b"maximumWidth")
+            anim.setDuration(350)
+            anim.setStartValue(0)
+            anim.setEndValue(220)
+            anim.start()
+            self._explorer_anim = anim 
+
+    def show_notification(self, message):
+        if self.notification_label:
+            self.notification_label.deleteLater()
+        self.notification_label = QLabel(message, self)
+        self.notification_label.setStyleSheet("QLabel { background: rgba(0,200,150,0.92); color: #fff; font-size: 18px; border-radius: 12px; padding: 12px 32px; border: 2px solid #00c896; box-shadow: 0 0 24px #00c896; }")
+        self.notification_label.setAlignment(Qt.AlignCenter)
+        self.notification_label.setFixedWidth(260)
+        self.notification_label.move(self.width()//2 - 130, 60)
+        self.notification_label.setGraphicsEffect(QGraphicsOpacityEffect(self.notification_label))
+        self.notification_label.show()
+        effect = self.notification_label.graphicsEffect()
+        anim = QPropertyAnimation(effect, b"opacity")
+        anim.setDuration(350)
+        anim.setStartValue(0)
+        anim.setEndValue(1)
+        anim.start()
+        self._notif_anim = anim
+        # Fade out after 1.5s
+        def fade_out():
+            anim2 = QPropertyAnimation(effect, b"opacity")
+            anim2.setDuration(600)
+            anim2.setStartValue(1)
+            anim2.setEndValue(0)
+            anim2.finished.connect(self.notification_label.deleteLater)
+            anim2.start()
+            self._notif_anim = anim2
+        QTimer.singleShot(1500, fade_out) 
+
+    def setup_quick_file_switcher(self):
+        self.quick_switch_shortcut = QShortcut(QKeySequence("Ctrl+P"), self)
+        self.quick_switch_shortcut.activated.connect(self.show_quick_file_switcher)
+
+    def show_quick_file_switcher(self):
+        dlg = QuickFileSwitcher(self, os.getcwd())
+        if dlg.exec_() == QDialog.Accepted:
+            file_path = dlg.selected_file()
+            if file_path:
+                self.open_file_with_animation(file_path)
+
+    def open_file_with_animation(self, file_path):
+        # Fade out editor, open file, fade in
+        effect = QGraphicsOpacityEffect(self.editor)
+        self.editor.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity")
+        anim.setDuration(200)
+        anim.setStartValue(1)
+        anim.setEndValue(0)
+        def after_fade_out():
+            with open(file_path, 'r') as file:
+                self.editor.setPlainText(file.read())
+                self.file_path = file_path
+            self.status_bar.showMessage(f"Opened: {file_path}")
+            anim2 = QPropertyAnimation(effect, b"opacity")
+            anim2.setDuration(200)
+            anim2.setStartValue(0)
+            anim2.setEndValue(1)
+            anim2.start()
+            self._editor_anim = anim2
+        anim.finished.connect(after_fade_out)
+        anim.start()
+        self._editor_anim = anim 
